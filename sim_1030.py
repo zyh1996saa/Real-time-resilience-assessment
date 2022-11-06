@@ -30,8 +30,8 @@ font = {
             
       	  }
 matplotlib.rc('font',**font)
-np.random.seed(521)
-random.seed(521)
+np.random.seed(520)
+random.seed(520)
 
 # constant
 v_dtower = 35 # 塔的设计风速
@@ -40,10 +40,10 @@ gamma = 0.2 #风速影响因子
 dt = 60 #时间间隔
 dl = 1 #线路长度标幺值
 suggested_vt_range = [30,65] #建议设置的台风风速范围
-simulation_times = 1
+simulation_times = 3
 min_replay_time = 5
 max_replay_time = 100
-early_stop_t = [0.99995,1.00005]
+early_stop_t = [0.999,1.001]
 early_stop_meantime = 5
 
 
@@ -340,15 +340,20 @@ class Initcase:
                     self.branches[branch_num].available = False
                     self.branches[branch_num].ttr = time2repair(cur_typhoon_speed)
                     self.branches[branch_num].breakstep = cur_step
+                    #print('branch %s-%s is damaged at time step %s'%(self.branches[branch_num].from_bus_num,self.branches[branch_num].to_bus_num,cur_step))
                     #print('ttr:',self.branches[branch_num].ttr)
                 else:
                     continue
                 
         for branch in self.branches:
-            if branch.breakstep and branch.ttr and(cur_step>=10):
-                if branch.breakstep + branch.ttr <= cur_step:
-                    branch.available = True
-                    #print('branch %s is repaired at time step %s'%(branch.branch_num,cur_step))
+            if branch.available == False:
+                #print(branch.from_bus_num,branch.to_bus_num)
+                #print(branch.breakstep,branch.ttr)
+                if (branch.breakstep>=0) and branch.ttr and(cur_step>=10):
+                    
+                    if branch.breakstep + branch.ttr <= cur_step:
+                        branch.available = True
+                        #print('branch %s-%s is repaired at time step %s'%(branch.from_bus_num,branch.to_bus_num,cur_step))
                 
         del_branch_list = []
         for branch in self.branches:
@@ -512,16 +517,19 @@ def wholeprocess_sim():
     print('*'*20+'start whole-process simulation' + '*'*20 )
     print('\n')
     step_load_loss_list = []
-    for sim_time in range(simulation_times):
-        print('\rsimulation time: %s / %s'%(sim_time,simulation_times),end='\r')
+    for sim_time in range(1):
+        #print('-'*50)
+        #print('\rsimulation time: %s / %s'%(sim_time,simulation_times),end='\r')
         preset_typhoon_windspeed = [round(random.uniform(suggested_vt_range[0],suggested_vt_range[1]),2) for i in range(len(preset_typhoon_traj))]
         preset_typhoon_case = {'traj':preset_typhoon_traj,'windspeed':preset_typhoon_windspeed}
+        global pfres,sim_case
         sim_case = copy.deepcopy(initcase)
         
         unconv_exist = False
         state_series = []
         is_end = False
         step_load_loss = []
+        
         for time_step in range(len(preset_typhoon_traj)):
             
         #for time_step in range(len(preset_typhoon_traj)):
@@ -534,22 +542,26 @@ def wholeprocess_sim():
             if pfres[1] == 0 :
                 unconv_exist = True
                 #yyy = copy.deepcopy(sim_case.case)
-                print('power flow not converge')
+                #print('power flow not converge during typhoon at simulation time %s'%sim_time)
+                #raise Exception('power flow not converge during typhoon')
+            if not unconv_exist:
+                cur_A = get_topo(pfres[0])
+                cur_F = get_feat(pfres[0])
+                cur_state = [cur_A,cur_F]
+                state_series.append(cur_state)
+                
+                #zzz = copy.deepcopy(sim_case.case)
+                if time_step == len(preset_typhoon_traj)-1:is_end = True
+                 
+                s = construct_s(time_step,state_series, preset_typhoon_case,sim_case)
+                replaybuffer.append(s)
+                end_load = pfres[0]['bus'].sum(axis=0)[2]
+                step_load_loss.append(end_load)
+                if not is_end:sim_case.busarray_restore() 
+            else:
                 break
-            cur_A = get_topo(pfres[0])
-            cur_F = get_feat(pfres[0])
-            cur_state = [cur_A,cur_F]
-            state_series.append(cur_state)
-            
-            #zzz = copy.deepcopy(sim_case.case)
-            if time_step == len(preset_typhoon_traj)-1:is_end = True
-             
-            s = construct_s(time_step,state_series, preset_typhoon_case,sim_case)
-            replaybuffer.append(s)
-            end_load = pfres[0]['bus'].sum(axis=0)[2]
-            step_load_loss.append(end_load)
-            if not is_end:sim_case.busarray_restore() 
-        
+        if not unconv_exist:
+            continue
         time_step = len(preset_typhoon_traj)-1
         sim_case.busarray_restore()
         while end_load != init_total_load:       
@@ -565,17 +577,19 @@ def wholeprocess_sim():
             
             
             yyy = sim_case.case
+            
             pfres = sim_case.runpf()
             '''
             if pfres[1] == 0 :
                 #unconv_exist = True
                 #yyy = copy.deepcopy(sim_case.case)
-                print('power flow not converge')
+                print('power flow not converge during repairing time')
                 break
             '''
             end_load = pfres[0]['bus'].sum(axis=0)[2]
             sim_case.busarray_restore() 
             step_load_loss.append(end_load)
+            #print('end_load:',end_load)
         step_load_loss_list.append(step_load_loss)
         '''
         end_load = pfres[0]['bus'].sum(axis=0)[2]
@@ -583,7 +597,7 @@ def wholeprocess_sim():
         load_loss_rate = (total_load-end_load)/total_load
         result = {'input':state_series,'output':load_loss_rate}
         results[sim_time] = result'''
-        return step_load_loss_list
+    return step_load_loss_list
 
 def construct_s(time_step,state_series, preset_typhoon_case,sim_case):
     #print(len(preset_typhoon_case['traj']))
@@ -697,6 +711,12 @@ def singlestate_replay(replaybuffer):
                     break
                 '''
                 end_load = pfres[0]['bus'].sum(axis=0)[2]
+                #print('end_load:',end_load)
+                total_load = ori_case118['bus'].sum(axis=0)[2]
+                #print('total_load',total_load)
+                load_loss = (total_load-end_load)
+                #print('load_loss',load_loss)
+                replayR += (load_loss*dt/60)
                 sim_case.busarray_restore() 
             R_list.append(replayR)
             if replay_time >= max_replay_time:
@@ -755,13 +775,27 @@ if __name__ == "__main__":
             initcase.buslist2branchlist([[101,102],[92,102],[92,100],[92,94],[92,93],[92,89],[92,91],[90,91]]),#10        
         ]
     global replaybuffer
-    replaybuffer = []
     
-    # whole-process simulation
-    step_load_loss_list = wholeprocess_sim()
-    # single-state replay
-    curlicue_S,curlicue_R = singlestate_replay(replaybuffer)
+    total_S,total_R = [],[]
+    for time in range(simulation_times):
+        # whole-process simulation
+        replaybuffer = []
+        print('simulation time: %s / %s'%(time,simulation_times))
+        step_load_loss_list = wholeprocess_sim()
+        
+        # single-state replay
+        curlicue_S,curlicue_R = singlestate_replay(replaybuffer)
+        for i in range(len(curlicue_S)):
+            total_S.append(curlicue_S[i])
+            total_R.append(curlicue_R[i])
+    # save data set and label set
+    A_series = [total_S[i][0] for i in range(len(total_S))]
+    F_series = [total_S[i][1] for i in range(len(total_S))]
+    R_series = [total_R[i] for i in range(len(total_R))]
+    np.save('A_series', np.array(A_series))
+    np.save('F_series', np.array(F_series))
+    np.save('R_series', np.array(R_series))
 
-     
+    
         
         
